@@ -33,6 +33,12 @@ individual fingers; one entry maps `cmds[0].q()` to a gripper pose on the same
 require both hands. Use `config/gripper.yaml` to wait for commands at startup
 and apply a 500 ms command timeout to either format.
 
+SDK v2.0.5 is bundled for Linux amd64 and arm64. Use `./download-lib.sh` to
+refresh both libraries and their shared header, or `--version vX.Y.Z` to select
+a future release. Stop the bridge before upgrading, then reconfigure and
+rebuild. See the guide for [SDK upgrade details](docs/revo2-bridge.md#updating-the-bundled-sdk)
+and [current limitations / recommended next steps](docs/revo2-bridge.md#current-limitations-and-recommended-next-steps).
+
 - Each hand (left or right) is controlled by a USB-to-serial device, and each generates a pair of topics: `rt/brainco/(left or right)/(cmd or state)`.
 
 - The position and speed of the fingers are normalized to the [0, 1] range.

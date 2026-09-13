@@ -3,3 +3,4 @@ logs
 *vscode
 bin/
 .cache/
+.brainco-sdk.*/

@@ -1,0 +1,3 @@
+d1d723c9b8ab5d82a3d63871a6520e3b9965a6ce940607f066f7223fcaa0c18a  include/stark-sdk.h
+013cad96259ca594e96429eeb2cfb2f9c69655563f809f17f301be3e88da454e  lib/x86_64/libbc_stark_sdk.so
+a64bba3cf93e3f32c7a790bd4fb9cf79814c5cb6c7aa50c942e97a68c1a955a5  lib/aarch64/libbc_stark_sdk.so

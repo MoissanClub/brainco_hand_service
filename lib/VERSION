@@ -1,2 +1,4 @@
-[bc-stark-sdk] Version: v1.1.9
-Update Time: Thu Apr 16 08:29:30 PM CST 2026
+[bc-stark-sdk] Version: v2.0.5
+Update Time: 2026-09-13 00:51:33 UTC
+Linux amd64 (x86_64): https://app.brainco.cn/universal/bc-stark-sdk/libs/v2.0.5/linux.zip
+Linux arm64 (aarch64): https://app.brainco.cn/universal/bc-stark-sdk/libs/v2.0.5/linux-arm64.zip

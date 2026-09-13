@@ -81,15 +81,18 @@ enum FingerUnitMode : uint8_t {
   FINGER_UNIT_MODE_PHYSICAL = 1,
 };
 
-enum ForceLevel : int32_t {
-  FORCE_LEVEL_UNUSED = 0,
+enum ForceLevel : uint8_t {
   FORCE_LEVEL_SMALL = 1,
   FORCE_LEVEL_NORMAL = 2,
   FORCE_LEVEL_FULL = 3,
 };
 
-enum LedColor : int32_t {
-  /// not equal to OFF, since majorly use LedMode to turn-off LED.
+enum HandType : uint8_t {
+  HAND_TYPE_LEFT = 0,
+  HAND_TYPE_RIGHT = 1,
+};
+
+enum LedColor : uint8_t {
   LED_COLOR_UNCHANGED = 0,
   LED_COLOR_R = 1,
   LED_COLOR_G = 2,
@@ -100,17 +103,13 @@ enum LedColor : int32_t {
   LED_COLOR_RGB = 7,
 };
 
-enum LedMode : int32_t {
-  LED_MODE_UNUSED = 0,
+enum LedMode : uint8_t {
+  LED_MODE_NONE = 0,
   LED_MODE_SHUTDOWN = 1,
   LED_MODE_KEEP = 2,
-  /// 1Hz freq on-off cycle, 50% duty cycle
   LED_MODE_BLINK = 3,
-  /// on-100ms, then off, no repeat, if repeatedly receive this, time counter will be reset at each time received (e.g., repeatedly receive interval <= 100ms equal always on)
   LED_MODE_ONE_SHOT = 4,
-  /// 0.5Hz freq on-off cycle, 50% duty cycle
-  LED_MODE_BLINK05HZ = 5,
-  /// 2Hz freq on-off cycle, 50% duty cycle
+  LED_MODE_BLINK0_5HZ = 5,
   LED_MODE_BLINK2HZ = 6,
 };
 
@@ -181,6 +180,10 @@ enum StarkFingerId : uint8_t {
 
 /// Stark hardware type
 /// Identifies the device generation and capabilities
+///
+/// Value ranges:
+///   Revo1: 0~9
+///   Revo2: 10~19
 enum StarkHardwareType : uint8_t {
   /// Revo1 with legacy Protobuf protocol
   STARK_HARDWARE_TYPE_REVO1_PROTOBUF = 0,
@@ -193,11 +196,15 @@ enum StarkHardwareType : uint8_t {
   /// Revo1 Advanced with capacitive touch sensor
   STARK_HARDWARE_TYPE_REVO1_ADVANCED_TOUCH = 4,
   /// Revo2 Basic (no touch sensor)
-  STARK_HARDWARE_TYPE_REVO2_BASIC = 5,
+  STARK_HARDWARE_TYPE_REVO2_BASIC = 10,
   /// Revo2 with capacitive touch sensor
-  STARK_HARDWARE_TYPE_REVO2_TOUCH = 6,
+  STARK_HARDWARE_TYPE_REVO2_TOUCH = 11,
   /// Revo2 with pressure/modulus touch sensor
-  STARK_HARDWARE_TYPE_REVO2_TOUCH_PRESSURE = 7,
+  STARK_HARDWARE_TYPE_REVO2_TOUCH_PRESSURE = 12,
+  /// Revo2 with 3D force matrix touch sensor
+  STARK_HARDWARE_TYPE_REVO2_TOUCH_FORCE3D = 13,
+  /// Revo2 with array pressure touch sensor
+  STARK_HARDWARE_TYPE_REVO2_TOUCH_ARRAY_PRESSURE = 14,
 };
 
 /// Communication protocol type
@@ -229,6 +236,9 @@ enum TouchSensorStatus : uint8_t {
   /// Unknown state
   TOUCH_SENSOR_STATUS_UNKNOWN = 255,
 };
+
+/// Opaque handle for ArrayPressureTouchDataBuffer
+struct CArrayPressureTouchItemBuffer;
 
 /// Opaque handle for DataCollector
 struct CDataCollector;
@@ -295,6 +305,22 @@ struct PressureDetailedItem {
   uint8_t sensor_count;
   /// Sensor data (up to 46 sensor points)
   uint16_t sensors_data[46];
+};
+
+/// ArrayPressure sensor status.
+struct CArrayPressureStatus {
+  /// Sensor status (5 bits, one per finger, 1=abnormal)
+  uint16_t sensor_status;
+  /// Warmup status (0=warming up, 1=complete)
+  uint8_t warmup_complete;
+};
+
+/// ArrayPressure touch data (25 registers = 50 bytes).
+/// Call `free_array_pressure_touch_data` to release.
+struct CArrayPressureTouchData {
+  CArrayPressureStatus status;
+  uint16_t data[25];
+  uint16_t data_len;
 };
 
 /// Device configuration returned by auto-detect functions.
@@ -383,74 +409,6 @@ struct CDetectedDeviceList {
   uintptr_t count;
 };
 
-/// Device information returned by `stark_get_device_info`.
-/// Contains device identification and version information.
-/// Call `free_device_info` to release memory.
-struct CDeviceInfo {
-  /// Device SKU (hand side: left/right)
-  SkuType sku_type;
-  /// Hardware type (device generation and capabilities)
-  StarkHardwareType hardware_type;
-  /// Serial number string (null-terminated)
-  const char *serial_number;
-  /// Firmware version string (null-terminated)
-  const char *firmware_version;
-};
-
-/// Raw capacitance data from touch sensors.
-/// Contains raw ADC values for each sensor channel.
-/// Call `free_touch_raw_data` to release.
-struct CTouchRawData {
-  /// Thumb sensor channels (7 channels)
-  uint32_t thumb[7];
-  /// Index finger sensor channels (11 channels)
-  uint32_t index[11];
-  /// Middle finger sensor channels (11 channels)
-  uint32_t middle[11];
-  /// Ring finger sensor channels (11 channels)
-  uint32_t ring[11];
-  /// Pinky finger sensor channels (7 channels)
-  uint32_t pinky[7];
-};
-
-/// Touch data for all 5 fingers.
-/// Returned by `stark_get_touch_status`. Call `free_touch_finger_data` to release.
-/// Array order: [Thumb, Index, Middle, Ring, Pinky]
-struct CTouchFingerData {
-  /// Touch data for each finger
-  CTouchFingerItem items[5];
-};
-
-/// Turbo mode configuration.
-/// Turbo mode enables continuous gripping force.
-/// Call `free_turbo_config` to release.
-struct CTurboConfig {
-  /// Interval between turbo pulses in milliseconds
-  uint16_t interval;
-  /// Duration of each turbo pulse in milliseconds
-  uint16_t duration;
-};
-
-/// LED information returned by `stark_get_led_info`.
-/// Call `free_led_info` to release.
-struct CLedInfo {
-  /// Current LED color
-  LedColor color;
-  /// Current LED mode (blinking pattern)
-  LedMode mode;
-};
-
-/// Button press event returned by `stark_get_button_event`.
-/// Call `free_button_event` to release.
-struct CButtonPressEvent {
-  /// Event timestamp in milliseconds
-  int32_t timestamp;
-  /// Button identifier
-  int32_t button_id;
-  /// Press state (down/up)
-  PressState press_state;
-};
-
 /// Modbus async read/write result callback.
 /// This callback processes results of asynchronous Modbus operations.
 /// Return value: 0 on success, non‑zero on failure.
@@ -510,6 +468,102 @@ using DfuStateCallback = void(*)(uint8_t slave_id, uint8_t state);
 
 /// DFU progress callback.
 using DfuProgressCallback = void(*)(uint8_t slave_id, float progress);
+
+/// Device information returned by `stark_get_device_info`.
+/// Contains device identification and version information.
+/// Call `free_device_info` to release memory.
+struct CDeviceInfo {
+  /// Device SKU (hand side: left/right) (Deprecated, use hand_type instead)
+  SkuType sku_type;
+  /// Device hand type (left/right)
+  HandType hand_type;
+  /// Hardware type (device generation and capabilities)
+  StarkHardwareType hardware_type;
+  /// Serial number string (null-terminated)
+  const char *serial_number;
+  /// Firmware version string (null-terminated)
+  const char *firmware_version;
+  /// Hardware version string (reserved; empty for current devices)
+  const char *hardware_version;
+};
+
+/// Raw capacitance data from touch sensors.
+/// Contains raw ADC values for each sensor channel.
+/// Call `free_touch_raw_data` to release.
+struct CTouchRawData {
+  /// Thumb sensor channels (7 channels)
+  uint32_t thumb[7];
+  /// Index finger sensor channels (11 channels)
+  uint32_t index[11];
+  /// Middle finger sensor channels (11 channels)
+  uint32_t middle[11];
+  /// Ring finger sensor channels (11 channels)
+  uint32_t ring[11];
+  /// Pinky finger sensor channels (7 channels)
+  uint32_t pinky[7];
+};
+
+/// Touch data for all 5 fingers.
+/// Returned by `stark_get_touch_status`. Call `free_touch_finger_data` to release.
+/// Array order: [Thumb, Index, Middle, Ring, Pinky]
+struct CTouchFingerData {
+  /// Touch data for each finger
+  CTouchFingerItem items[5];
+};
+
+/// 3D force data for a single measurement point.
+/// Fx, Fy are signed (-128 ~ +127), Fz is unsigned (0 ~ 255).
+struct CForce3DPoint {
+  int8_t fx;
+  int8_t fy;
+  uint16_t fz;
+};
+
+/// Force3D summary data for 4 fingers (no thumb).
+/// Call `free_force3d_touch_summary` to release.
+struct CForce3DTouchSummary {
+  CForce3DPoint index;
+  CForce3DPoint middle;
+  CForce3DPoint ring;
+  CForce3DPoint pinky;
+};
+
+/// Force3D array data for a single finger (31 measurement points).
+/// Call `free_force3d_finger_array` to release.
+struct CForce3DFingerArray {
+  CForce3DPoint points[31];
+  uint16_t count;
+};
+
+/// Turbo mode configuration.
+/// Turbo mode enables continuous gripping force.
+/// Call `free_turbo_config` to release.
+struct CTurboConfig {
+  /// Interval between turbo pulses in milliseconds
+  uint16_t interval;
+  /// Duration of each turbo pulse in milliseconds
+  uint16_t duration;
+};
+
+/// LED information returned by `stark_get_led_info`.
+/// Call `free_led_info` to release.
+struct CLedInfo {
+  /// Current LED color
+  LedColor color;
+  /// Current LED mode (blinking pattern)
+  LedMode mode;
+};
+
+/// Button press event returned by `stark_get_button_event`.
+/// Call `free_button_event` to release.
+struct CButtonPressEvent {
+  /// Event timestamp in milliseconds
+  int32_t timestamp;
+  /// Button identifier
+  int32_t button_id;
+  /// Press state (down/up)
+  PressState press_state;
+};
 
 extern "C" {
 
@@ -714,6 +768,18 @@ int pressure_detailed_buffer_pop_finger(CPressureDetailedBuffer *buffer,
 /// @param buffer Pointer to CPressureDetailedBuffer
 void pressure_detailed_buffer_clear(CPressureDetailedBuffer *buffer);
 
+CArrayPressureTouchItemBuffer *array_pressure_touch_buffer_new(uintptr_t max_size);
+
+void array_pressure_touch_buffer_free(CArrayPressureTouchItemBuffer *buffer);
+
+int array_pressure_touch_buffer_pop_all(CArrayPressureTouchItemBuffer *buffer,
+                                        CArrayPressureTouchData *out_data,
+                                        uintptr_t max_count);
+
+uintptr_t array_pressure_touch_buffer_len(const CArrayPressureTouchItemBuffer *buffer);
+
+void array_pressure_touch_buffer_clear(CArrayPressureTouchItemBuffer *buffer);
+
 /// Create a new data collector - Basic version (motor only)
 ///
 /// @param handle Device handler
@@ -804,44 +870,34 @@ CDataCollector *data_collector_new_pressure_hybrid(DeviceHandler *handle,
                                                    uint32_t detailed_frequency,
                                                    int enable_stats);
 
-/// Start data collection
-///
-/// @param collector Pointer to CDataCollector
-/// @return 0 on success, -1 on failure
+/// Create a new data collector - ArrayPressure touch version
+CDataCollector *data_collector_new_array_pressure(DeviceHandler *handle,
+                                                  CMotorStatusBuffer *motor_buffer,
+                                                  CArrayPressureTouchItemBuffer *touch_buffer,
+                                                  unsigned char slave_id,
+                                                  uint32_t motor_frequency,
+                                                  uint32_t touch_frequency,
+                                                  int enable_stats);
+
 int data_collector_start(CDataCollector *collector);
 
-/// Stop data collection (non-blocking)
-///
-/// Sends stop signal but returns immediately.
-/// Use data_collector_wait() to ensure thread has finished.
-///
-/// @param collector Pointer to CDataCollector
-/// @return 0 on success, -1 on failure
 int data_collector_stop(CDataCollector *collector);
 
-/// Wait for data collection thread to finish
-///
-/// Blocks until the collection thread exits.
-/// Should be called after data_collector_stop() if cleanup is needed.
-///
-/// @param collector Pointer to CDataCollector
-/// @return 0 on success, -1 on failure
 int data_collector_wait(CDataCollector *collector);
 
-/// Check if data collector is running
-///
-/// @param collector Pointer to CDataCollector
-/// @return 1 if running, 0 if not running, -1 if collector is NULL
 int data_collector_is_running(const CDataCollector *collector);
 
-/// Free a data collector
-///
-/// @param collector Pointer to CDataCollector
 void data_collector_free(CDataCollector *collector);
 
 /// Initialize SDK logging.
 /// log_level: Log level (Debug, Info, Warn, Error). Default is Info.
+/// File logging is enabled in debug builds and disabled in release builds.
 void init_logging(LogLevel log_level);
+
+/// Initialize SDK logging with an explicit output mode.
+/// log_level: Log level (Debug, Info, Warn, Error). Default is Info.
+/// enable_file_logging: When true, also write to logs/revo2_<timestamp>.log.
+void init_logging_with_options(LogLevel log_level, bool enable_file_logging);
 
 /// List all available Stark serial ports.
 void list_available_ports();
@@ -1152,10 +1208,53 @@ void ethercat_start_dfu(DeviceHandler *handle,
                         EtherCATFoeType dfu_type,
                         const char *file_path);
 
+/// Set Modbus async read/write callback.
+void set_modbus_operation_callback(ModbusOperationCallback cb);
+
+/// Set Modbus read callback for input registers.
+void set_modbus_read_input_callback(ModbusRxCallback cb);
+
+/// Set Modbus read callback for holding registers.
+void set_modbus_read_holding_callback(ModbusRxCallback cb);
+
+/// Set Modbus write callback.
+void set_modbus_write_callback(ModbusTxCallback cb);
+
+/// Set CAN/CANFD RX callback.
+void set_can_rx_callback(CanRxCallback cb);
+
+/// Set CAN/CANFD TX callback.
+void set_can_tx_callback(CanTxCallback cb);
+
+/// Set DFU state callback.
+void set_dfu_state_callback(DfuStateCallback cb);
+
+/// Set DFU progress callback.
+void set_dfu_progress_callback(DfuProgressCallback cb);
+
 /// Get device information.
 /// Returns a pointer to `DeviceInfo`; you must call `free_device_info` to free
 /// it. Returns NULL on failure.
+///
+/// NOTE: Hardware type is determined by SN prefix. If the SN is not recognized,
+/// hardware_type defaults to Revo2Basic. Use `stark_set_hardware_type()` to
+/// manually override if needed.
 CDeviceInfo *stark_get_device_info(DeviceHandler *handle, uint8_t slave_id);
+
+/// Set hardware type for a specific slave device.
+///
+/// Use this to manually override the hardware type when SN-based auto-detection
+/// in `stark_get_device_info()` returns an incorrect result (e.g. device SN not
+/// yet programmed, defaults to Revo2Basic).
+///
+/// Can also be used to modify `CDetectedDevice.hardware_type` before calling
+/// `init_from_detected()`, or to override after initialization.
+///
+/// # Parameters
+/// - handle: Device handler
+/// - slave_id: The slave ID
+/// - hw_type: StarkHardwareType enum value
+void stark_set_hardware_type(DeviceHandler *handle, uint8_t slave_id, StarkHardwareType hw_type);
 
 /// Read holding registers (fast, no retry).
 /// address: Start register address.
@@ -1221,63 +1320,6 @@ uint32_t stark_get_can_data_baudrate(DeviceHandler *handle);
 /// Returns: 0=Unknown, 1=Capacitive, 2=Pressure
 /// This should be called for Revo2 Touch devices to determine the actual touch sensor type.
 uint8_t stark_get_touch_vendor(DeviceHandler *handle, uint8_t slave_id);
-
-/// Get touch sensor type from hardware type.
-/// Returns: 0=None, 1=Capacitive, 2=Pressure
-/// This is a pure function based on hardware type classification.
-uint8_t stark_get_touch_sensor_type(uint8_t hw_type);
-
-/// Check if hardware type has touch sensor.
-/// Returns: true if device has touch sensor, false otherwise.
-bool stark_is_touch_device(uint8_t hw_type);
-
-/// Check if hardware type is Revo1 device (motor API perspective).
-/// Check if hardware type uses Revo1 Motor API.
-/// Revo1 Basic/Touch use Revo1 Motor API.
-/// Revo1 Advanced/AdvancedTouch and all Revo2 use Revo2 Motor API.
-/// Note: Revo1Protobuf is legacy firmware, also uses Revo1 Motor API.
-/// Returns: true if uses Revo1 Motor API, false if uses Revo2 Motor API.
-bool stark_uses_revo1_motor_api(uint8_t hw_type);
-
-/// Check if hardware type uses Revo1 Touch API.
-/// Revo1 Touch API has different sensor counts per finger (capacitive).
-/// Returns: true if uses Revo1 Touch API, false otherwise.
-bool stark_uses_revo1_touch_api(uint8_t hw_type);
-
-/// Check if hardware type uses Revo2 Touch API.
-/// Revo2 Touch API has uniform sensor counts per finger (capacitive).
-/// Returns: true if uses Revo2 Touch API, false otherwise.
-bool stark_uses_revo2_touch_api(uint8_t hw_type);
-
-/// Check if hardware type uses Pressure/Modulus Touch API.
-/// Pressure Touch API uses completely different data structure (pressure sensors).
-/// Returns: true if uses Pressure Touch API, false otherwise.
-bool stark_uses_pressure_touch_api(uint8_t hw_type);
-
-/// Get RS485 serial baud rate.
-/// Valid values: 115200, 57600, 19200, 460800.
-uint32_t stark_get_rs485_baudrate(DeviceHandler *handle, uint8_t slave_id);
-
-/// Set RS485 serial baud rate.
-/// Supported values: 115200, 57600, 19200, 460800.
-void stark_set_rs485_baudrate(DeviceHandler *handle, uint8_t slave_id, uint32_t baudrate);
-
-/// Get CANFD baud rate.
-/// Supported values: 1M, 2M, 4M, 5M.
-uint32_t stark_get_canfd_baudrate(DeviceHandler *handle, uint8_t slave_id);
-
-/// Set CANFD baud rate.
-/// Supported values: 1M, 2M, 4M, 5M.
-void stark_set_canfd_baudrate(DeviceHandler *handle, uint8_t slave_id, uint32_t baudrate);
-
-/// Set device slave ID.
-/// Default is 1, valid range 1~247; 0 is the broadcast address.
-/// Revo1 default ID is 1; Revo2 default left/right IDs are 0x7E and 0x7F.
-/// When controlling multiple devices on the same bus, assign different IDs,
-/// e.g. left=1, right=2.
-/// Using broadcast ID 0 controls all devices on the bus; per Modbus spec,
-/// broadcast commands do not receive responses.
-void stark_set_slave_id(DeviceHandler *handle, uint8_t slave_id, uint8_t new_id);
 
 /// Set force level (only supported on Revo1 Basic).
 ///
@@ -1704,6 +1746,28 @@ CTouchFingerData *stark_get_touch_status(DeviceHandler *handle, uint8_t slave_id
 /// For example: 0b00000001 resets the first sensor.
 void stark_reset_touch_sensor(DeviceHandler *handle, uint8_t slave_id, uint8_t bits);
 
+/// Get touch sensor type from hardware type.
+/// Returns: 0=None, 1=Capacitive, 2=Pressure
+/// This is a pure function based on hardware type classification.
+uint8_t stark_get_touch_sensor_type(uint8_t hw_type);
+
+/// Check if hardware type has touch sensor.
+/// Returns: true if device has touch sensor, false otherwise.
+bool stark_is_touch_device(uint8_t hw_type);
+
+/// Check if hardware type is Revo1 device (motor API perspective).
+/// Check if hardware type uses Revo1 Motor API.
+/// Revo1 Basic/Touch use Revo1 Motor API.
+/// Revo1 Advanced/AdvancedTouch and all Revo2 use Revo2 Motor API.
+/// Note: Revo1Protobuf is legacy firmware, also uses Revo1 Motor API.
+/// Returns: true if uses Revo1 Motor API, false if uses Revo2 Motor API.
+bool stark_uses_revo1_motor_api(uint8_t hw_type);
+
+/// Check if hardware type uses Revo1 Touch API.
+/// Revo1 Touch API has different sensor counts per finger (capacitive).
+/// Returns: true if uses Revo1 Touch API, false otherwise.
+bool stark_uses_revo1_touch_api(uint8_t hw_type);
+
 /// Calibrate tactile sensor parameters.
 /// bits: Bitmask of sensors to calibrate, range 0~31.
 /// For example: 0b00000001 calibrates the first sensor.
@@ -1712,6 +1776,119 @@ void stark_reset_touch_sensor(DeviceHandler *handle, uint8_t slave_id, uint8_t b
 void stark_calibrate_touch_sensor(DeviceHandler *handle,
                                   uint8_t slave_id,
                                   uint8_t bits);
+
+/// Check if hardware type uses Revo2 Touch API.
+/// Revo2 Touch API has uniform sensor counts per finger (capacitive).
+/// Returns: true if uses Revo2 Touch API, false otherwise.
+bool stark_uses_revo2_touch_api(uint8_t hw_type);
+
+/// Check if hardware type uses Pressure/Modulus Touch API.
+/// Pressure Touch API uses completely different data structure (pressure sensors).
+/// Returns: true if uses Pressure Touch API, false otherwise.
+bool stark_uses_pressure_touch_api(uint8_t hw_type);
+
+/// Get RS485 serial baud rate.
+/// Valid values: 115200, 57600, 19200, 460800.
+uint32_t stark_get_rs485_baudrate(DeviceHandler *handle, uint8_t slave_id);
+
+/// Set RS485 serial baud rate.
+/// Supported values: 115200, 57600, 19200, 460800.
+void stark_set_rs485_baudrate(DeviceHandler *handle, uint8_t slave_id, uint32_t baudrate);
+
+/// Get CANFD baud rate.
+/// Supported values: 1M, 2M, 4M, 5M.
+uint32_t stark_get_canfd_baudrate(DeviceHandler *handle, uint8_t slave_id);
+
+/// Set CANFD baud rate.
+/// Supported values: 1M, 2M, 4M, 5M.
+void stark_set_canfd_baudrate(DeviceHandler *handle, uint8_t slave_id, uint32_t baudrate);
+
+/// Set device slave ID.
+/// Default is 1, valid range 1~247; 0 is the broadcast address.
+/// Revo1 default ID is 1; Revo2 default left/right IDs are 0x7E and 0x7F.
+/// When controlling multiple devices on the same bus, assign different IDs,
+/// e.g. left=1, right=2.
+/// Using broadcast ID 0 controls all devices on the bus; per Modbus spec,
+/// broadcast commands do not receive responses.
+void stark_set_slave_id(DeviceHandler *handle, uint8_t slave_id, uint8_t new_id);
+
+/// Get Force3D touch summary data (4 fingers, no thumb).
+/// Returns a pointer to `CForce3DTouchSummary`; call `free_force3d_touch_summary` to free it.
+/// Returns NULL on failure.
+CForce3DTouchSummary *stark_get_force3d_touch_summary(DeviceHandler *handle, uint8_t slave_id);
+
+/// Free Force3D touch summary data.
+void free_force3d_touch_summary(CForce3DTouchSummary *ptr);
+
+/// Get Force3D finger array data (31 measurement points).
+/// finger: 0=index, 1=middle, 2=ring, 3=pinky
+/// Returns a pointer to `CForce3DFingerArray`; call `free_force3d_finger_array` to free it.
+/// Returns NULL on failure.
+CForce3DFingerArray *stark_get_force3d_finger_array(DeviceHandler *handle,
+                                                    uint8_t slave_id,
+                                                    uint8_t finger);
+
+/// Free Force3D finger array data.
+void free_force3d_finger_array(CForce3DFingerArray *ptr);
+
+/// Check if device uses Revo2 Motor API.
+///
+/// Revo1 Advanced/AdvancedTouch and all Revo2 use Revo2 Motor API.
+/// Revo1 Basic/Touch use Revo1 Motor API.
+bool device_info_uses_revo2_motor_api(const CDeviceInfo *info);
+
+/// Check if device uses Revo2 Touch API.
+///
+/// Includes capacitive (Revo2Touch), pressure (Revo2TouchPressure),
+/// force3D (Revo2TouchForce3D), and array pressure (Revo2TouchArrayPressure) sensors.
+bool device_info_uses_revo2_touch_api(const CDeviceInfo *info);
+
+/// Check if device has any touch sensor
+bool device_info_is_touch(const CDeviceInfo *info);
+
+void free_motor_status_data(CMotorStatusData *data);
+
+void free_touch_raw_data(CTouchRawData *data);
+
+void free_touch_finger_data(CTouchFingerData *status);
+
+void free_touch_finger_item(CTouchFingerItem *item);
+
+void free_turbo_config(CTurboConfig *config);
+
+void free_led_info(CLedInfo *info);
+
+void free_button_event(CButtonPressEvent *event);
+
+/// Get ArrayPressure touch data (status + 25 registers).
+/// Returns a pointer to `CArrayPressureTouchData`; call `free_array_pressure_touch_data` to free it.
+/// Returns NULL on failure.
+CArrayPressureTouchData *stark_get_array_pressure_touch_data(DeviceHandler *handle,
+                                                             uint8_t slave_id);
+
+/// Free ArrayPressure touch data.
+void free_array_pressure_touch_data(CArrayPressureTouchData *ptr);
+
+/// Set ArrayPressure device sleep mode.
+/// enable: 1=sleep, 0=wake
+void stark_set_array_pressure_sleep(DeviceHandler *handle, uint8_t slave_id, bool enable);
+
+/// Get finger backlash compensation values (6 values, unit °×10).
+/// Returns pointer to array of 6 u16 values; caller must free with `free_u16_array`.
+/// Returns NULL on failure.
+uint16_t *stark_factory_get_backlash(DeviceHandler *handle, uint8_t slave_id, uint16_t *out_len);
+
+/// Set finger backlash compensation values (6 values, unit °×10).
+/// Requires factory key to be set first.
+void stark_factory_set_backlash(DeviceHandler *handle,
+                                uint8_t slave_id,
+                                const uint16_t *values,
+                                uint16_t len);
+
+/// Trigger finger backlash self-check.
+/// finger_id: 0=thumb_tip, 1=thumb_root, 2=index, 3=middle, 4=ring, 5=pinky
+/// Requires factory key to be set first.
+void stark_factory_backlash_self_check(DeviceHandler *handle, uint8_t slave_id, uint8_t finger_id);
 
 /// Query whether automatic position calibration on power‑up is enabled.
 bool stark_get_auto_calibration(DeviceHandler *handle, uint8_t slave_id);
@@ -1787,60 +1964,6 @@ bool device_info_uses_revo1_motor_api(const CDeviceInfo *info);
 /// Revo1 Touch API has different sensor counts per finger (4 sensors per finger).
 /// Includes Revo1Touch and Revo1AdvancedTouch.
 bool device_info_uses_revo1_touch_api(const CDeviceInfo *info);
-
-/// Check if device uses Revo2 Motor API.
-///
-/// Revo1 Advanced/AdvancedTouch and all Revo2 use Revo2 Motor API.
-/// Revo1 Basic/Touch use Revo1 Motor API.
-bool device_info_uses_revo2_motor_api(const CDeviceInfo *info);
-
-/// Check if device uses Revo2 Touch API.
-///
-/// Includes both capacitive (Revo2Touch) and pressure (Revo2TouchPressure) sensors.
-bool device_info_uses_revo2_touch_api(const CDeviceInfo *info);
-
-/// Check if device has any touch sensor
-bool device_info_is_touch(const CDeviceInfo *info);
-
-void free_motor_status_data(CMotorStatusData *data);
-
-void free_touch_raw_data(CTouchRawData *data);
-
-void free_touch_finger_data(CTouchFingerData *status);
-
-void free_touch_finger_item(CTouchFingerItem *item);
-
-void free_turbo_config(CTurboConfig *config);
-
-void free_led_info(CLedInfo *info);
-
-void free_button_event(CButtonPressEvent *event);
-
-void free_string(const char *s);
-
-/// Set Modbus async read/write callback.
-void set_modbus_operation_callback(ModbusOperationCallback cb);
-
-/// Set Modbus read callback for input registers.
-void set_modbus_read_input_callback(ModbusRxCallback cb);
-
-/// Set Modbus read callback for holding registers.
-void set_modbus_read_holding_callback(ModbusRxCallback cb);
-
-/// Set Modbus write callback.
-void set_modbus_write_callback(ModbusTxCallback cb);
-
-/// Set CAN/CANFD RX callback.
-void set_can_rx_callback(CanRxCallback cb);
-
-/// Set CAN/CANFD TX callback.
-void set_can_tx_callback(CanTxCallback cb);
-
-/// Set DFU state callback.
-void set_dfu_state_callback(DfuStateCallback cb);
-
-/// Set DFU progress callback.
-void set_dfu_progress_callback(DfuProgressCallback cb);
 
 }  // extern "C"
 

@@ -59,6 +59,16 @@ if(BUILD_TESTING)
   target_include_directories(test_discovery BEFORE PRIVATE "${BRAINCO_SDK_INCLUDE}" include)
   target_link_libraries(test_discovery PRIVATE Threads::Threads)
   add_test(NAME serial_discovery COMMAND test_discovery)
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_program(BASH_EXECUTABLE bash)
+    if(BASH_EXECUTABLE)
+      add_test(NAME sdk_updater COMMAND "${BASH_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/test_download_lib.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+      set_tests_properties(sdk_updater PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+  endif()
 endif()
 
 if(BUILD_SERVICE)
