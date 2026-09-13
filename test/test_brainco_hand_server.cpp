@@ -12,11 +12,13 @@ int main(int argc, char** argv)
 
     std::string ns = argc > 1 ? argv[1] : "left";
     auto lowcmd = std::make_unique<unitree::robot::RealTimePublisher<unitree_go::msg::dds_::MotorCmds_>>("rt/brainco/"+ns+"/cmd");
+    lowcmd->lock();
     lowcmd->msg_.cmds().resize(6);
     for(auto & finger : lowcmd->msg_.cmds())
     {
         finger.dq() = 1.; // max speed
     }
+    lowcmd->unlock();
     auto lowstate = std::make_shared<unitree::robot::SubscriptionBase<unitree_go::msg::dds_::MotorStates_>>("rt/brainco/"+ns+"/state");
     lowstate->wait_for_connection();
 
@@ -24,6 +26,7 @@ int main(int argc, char** argv)
 
     auto hand_ctrl = [&](std::array<float, 6> & pos)
     {
+        lowcmd->lock();
         for(int i(0); i<6; i++)
         {
             lowcmd->msg_.cmds()[i].q() = pos[i];

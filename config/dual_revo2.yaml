@@ -1,0 +1,27 @@
+# Existing BrainCo topics: six MotorCmds entries control fingers, one controls a gripper.
+# State messages always contain six fingers. Startup/timeout retain legacy behavior.
+discovery:
+  baudrate: 460800
+  settle_ms: 150
+  probe_attempts: 3
+  probe_retry_ms: 100
+  attempts: 5
+  retry_ms: 500
+  require_both: true
+period_ms: 10
+hands:
+  left:
+    slave_id: 126
+    # Prefer /dev/serial/by-id/... for stable explicit port selection.
+    # port: /dev/ttyUSB2
+    input: auto
+    control: position_speed
+    startup_open: true
+    command_timeout_ms: 0
+  right:
+    slave_id: 127
+    # port: /dev/ttyUSB1
+    input: auto
+    control: position_speed
+    startup_open: true
+    command_timeout_ms: 0

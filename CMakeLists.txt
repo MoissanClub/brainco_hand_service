@@ -1,52 +1,95 @@
 cmake_minimum_required(VERSION 3.10)
-project(brainco_hand)
+project(brainco_hand LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
 if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-message(STATUS "Current system architecture: ${CMAKE_SYSTEM_PROCESSOR}")
-
-if (NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" AND NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-  message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}. Supported architectures are aarch64 and x86_64.")
+option(BUILD_SERVICE "Build DDS service and motion example (requires Unitree SDK2)" ON)
+set(BRAINCO_SDK_ROOT "" CACHE PATH "Downloaded SDK dist directory; empty uses bundled SDK")
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|x86_64)$")
+  message(FATAL_ERROR "Supported architectures: aarch64 and x86_64")
 endif()
 
-
-if (CMAKE_BUILD_TYPE MATCHES "Debug")
-  message("-- BUILD_TYPE: Debug")
-  add_compile_options(-g -O0 -fPIC)
+# Always select the header and binary together. v1 and v2 enum values differ.
+if(BRAINCO_SDK_ROOT)
+  get_filename_component(BRAINCO_SDK_ROOT "${BRAINCO_SDK_ROOT}" ABSOLUTE)
+  set(BRAINCO_SDK_INCLUDE "${BRAINCO_SDK_ROOT}/include")
+  set(BRAINCO_SDK_LIBRARY "${BRAINCO_SDK_ROOT}/shared/linux/libbc_stark_sdk.so")
 else()
-  message("-- BUILD_TYPE: Release")
-  add_compile_options(-O3 -DNDEBUG -fPIC)
+  set(BRAINCO_SDK_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  set(BRAINCO_SDK_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/lib/${CMAKE_SYSTEM_PROCESSOR}/libbc_stark_sdk.so")
+endif()
+if(NOT EXISTS "${BRAINCO_SDK_INCLUDE}/stark-sdk.h" OR NOT EXISTS "${BRAINCO_SDK_LIBRARY}")
+  message(FATAL_ERROR "SDK header/library pair missing. BRAINCO_SDK_ROOT must point to a downloaded dist directory.")
+endif()
+message(STATUS "BrainCo SDK header: ${BRAINCO_SDK_INCLUDE}/stark-sdk.h")
+message(STATUS "BrainCo SDK library: ${BRAINCO_SDK_LIBRARY}")
+file(READ "${BRAINCO_SDK_INCLUDE}/stark-sdk.h" BRAINCO_SDK_HEADER)
+if(BRAINCO_SDK_HEADER MATCHES "STARK_HARDWARE_TYPE_REVO2_TOUCH_ARRAY_PRESSURE")
+  add_definitions(-DBRAINCO_SDK_HAS_EXTENDED_REVO2)
 endif()
 
-if(POLICY CMP0167)
-  cmake_policy(SET CMP0167 NEW)
-endif()
-
-find_package(Boost REQUIRED COMPONENTS program_options)
+find_package(Threads REQUIRED)
 find_package(yaml-cpp REQUIRED)
+add_library(brainco_config src/config.cpp)
+target_include_directories(brainco_config PUBLIC include)
+target_link_libraries(brainco_config PUBLIC yaml-cpp)
 
+add_library(brainco_sdk SHARED IMPORTED)
+# Vendor binaries have no SONAME. Link by library name so the loader uses RPATH,
+# rather than embedding a path relative to the executable's working directory.
+set_target_properties(brainco_sdk PROPERTIES
+  IMPORTED_LOCATION "${BRAINCO_SDK_LIBRARY}" IMPORTED_NO_SONAME TRUE)
+add_library(brainco_serial src/serial.cpp)
+target_include_directories(brainco_serial BEFORE PUBLIC "${BRAINCO_SDK_INCLUDE}" include)
+target_link_libraries(brainco_serial PUBLIC brainco_sdk Threads::Threads)
 
-include_directories(
-  /usr/local/include/ddscxx
-  ${CMAKE_SOURCE_DIR}/include
-)
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(test_bridge test/test_bridge.cpp)
+  target_link_libraries(test_bridge PRIVATE brainco_config Threads::Threads)
+  add_test(NAME command_and_config COMMAND test_bridge "${CMAKE_CURRENT_SOURCE_DIR}")
 
-link_directories(
-  ${CMAKE_SOURCE_DIR}/lib/${CMAKE_SYSTEM_PROCESSOR}
-)
+  # Fake the SDK boundary to exercise discovery failures without moving hardware.
+  add_executable(test_discovery test/test_discovery.cpp src/serial.cpp)
+  target_include_directories(test_discovery BEFORE PRIVATE "${BRAINCO_SDK_INCLUDE}" include)
+  target_link_libraries(test_discovery PRIVATE Threads::Threads)
+  add_test(NAME serial_discovery COMMAND test_discovery)
+endif()
 
-link_libraries(
-  unitree_sdk2 ddsc ddscxx rt pthread
-  libboost_program_options.a yaml-cpp fmt
-  bc_stark_sdk
-)
-
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
-add_executable(brainco_hand_server main.cpp)
-add_executable(test_brainco_hand_server test/test_brainco_hand_server.cpp)
+if(BUILD_SERVICE)
+  if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+  endif()
+  find_package(Boost REQUIRED COMPONENTS program_options)
+  find_package(spdlog REQUIRED)
+  find_package(unitree_sdk2 QUIET)
+  if(NOT TARGET unitree_sdk2)
+    # Retain support for older installations that lack a package config.
+    find_path(UNITREE_INCLUDE_DIR unitree/idl/go2/MotorCmds_.hpp)
+    find_path(DDSCXX_INCLUDE_DIR dds/dds.hpp PATH_SUFFIXES ddscxx)
+    find_library(UNITREE_LIBRARY unitree_sdk2)
+    find_library(DDSC_LIBRARY ddsc)
+    find_library(DDSCXX_LIBRARY ddscxx)
+    if(NOT UNITREE_INCLUDE_DIR OR NOT DDSCXX_INCLUDE_DIR OR NOT UNITREE_LIBRARY OR NOT DDSC_LIBRARY OR NOT DDSCXX_LIBRARY)
+      message(FATAL_ERROR "Install Unitree SDK2 or set CMAKE_PREFIX_PATH; use -DBUILD_SERVICE=OFF for hardware-free tests.")
+    endif()
+    add_library(unitree_sdk2 INTERFACE)
+    target_include_directories(unitree_sdk2 INTERFACE "${UNITREE_INCLUDE_DIR}" "${DDSCXX_INCLUDE_DIR}")
+    target_link_libraries(unitree_sdk2 INTERFACE "${UNITREE_LIBRARY}" "${DDSC_LIBRARY}" "${DDSCXX_LIBRARY}" Threads::Threads)
+  endif()
+  add_executable(brainco_hand_server main.cpp)
+  target_include_directories(brainco_hand_server BEFORE PRIVATE "${BRAINCO_SDK_INCLUDE}" include)
+  target_link_libraries(brainco_hand_server PRIVATE brainco_serial brainco_config unitree_sdk2 Boost::program_options spdlog::spdlog rt)
+  add_executable(test_brainco_hand_server test/test_brainco_hand_server.cpp)
+  target_include_directories(test_brainco_hand_server PRIVATE include)
+  target_link_libraries(test_brainco_hand_server PRIVATE unitree_sdk2 spdlog::spdlog Threads::Threads rt)
+  if(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set_target_properties(brainco_hand_server test_brainco_hand_server PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+  endif()
+endif()

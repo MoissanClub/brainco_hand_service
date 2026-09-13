@@ -1,0 +1,31 @@
+# MotorCmds_ on rt/brainco/{left,right}/cmd: one entry maps cmds[0].q() to a gripper;
+# six entries keep native finger control. State topics always publish six fingers.
+# This VLA profile waits for input and applies a 500 ms timeout to either format.
+discovery:
+  require_both: true
+hands:
+  left:
+    input: auto
+    control: position_speed
+    startup_open: false
+    command_timeout_ms: 500
+    gripper:
+      index: 0
+      open_value: 0.0
+      closed_value: 1.0
+      # Illustrative poses; calibrate thumb opposition and closure on your setup.
+      open_pose: [0, 0, 0, 0, 0, 0]
+      closed_pose: [1, 1, 1, 1, 1, 1]
+      speed: 0.3
+  right:
+    input: auto
+    control: position_speed
+    startup_open: false
+    command_timeout_ms: 500
+    gripper:
+      index: 0
+      open_value: 0.0
+      closed_value: 1.0
+      open_pose: [0, 0, 0, 0, 0, 0]
+      closed_pose: [1, 1, 1, 1, 1, 1]
+      speed: 0.3

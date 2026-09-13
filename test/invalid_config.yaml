@@ -1,0 +1,4 @@
+hands:
+  left:
+    gripper:
+      close_value: 1 # Typo must fail, not silently reverse a gripper convention.

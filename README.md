@@ -24,6 +24,15 @@ The dexterous hand is controlled via serial communication, and the manufacturer 
 
 In this repository, we convert serial messages into DDS messages so they can be used with [unitree_sdk2](https://github.com/unitreerobotics/unitree_sdk2) or [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python).
 
+See [Revo2 bridge configuration](docs/revo2-bridge.md) for cold-start retries,
+dual-hand discovery, SDK version selection, control-mode choices and VLA gripper
+mapping. Existing six-finger DDS topics, units and partial-hand startup remain
+the default. Command input defaults to `auto`: six `MotorCmds_` entries control
+individual fingers; one entry maps `cmds[0].q()` to a gripper pose on the same
+`rt/brainco/{left,right}/cmd` topics. The provided dual-hand configurations
+require both hands. Use `config/gripper.yaml` to wait for commands at startup
+and apply a 500 ms command timeout to either format.
+
 - Each hand (left or right) is controlled by a USB-to-serial device, and each generates a pair of topics: `rt/brainco/(left or right)/(cmd or state)`.
 
 - The position and speed of the fingers are normalized to the [0, 1] range.
@@ -58,7 +67,7 @@ cd ~/brainco_hand_service/bin
 #  -n [ --network_interface ] arg dds network interface
 
 # start server
-sudo ./brainco_hand_server --network eth0
+sudo ./brainco_hand_server --network_interface eth0
 # Simplified (defaults apply)
 sudo ./brainco_hand_server
 
@@ -119,4 +128,3 @@ Follow the prompts in the script to complete your configuration.
    ```
 
    
-

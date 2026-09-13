@@ -23,6 +23,8 @@ namespace param
         desc.add_options()
             ("help,h", "produce help message")
             ("version,v", "show version")
+            ("config,c", po::value<std::string>()->default_value(""), "optional YAML configuration file")
+            ("detect-only", "discover hands and exit without DDS or motion commands")
             ("network_interface,n", po::value<std::string>()->default_value(""), "dds network interface");
 
         po::variables_map vm;

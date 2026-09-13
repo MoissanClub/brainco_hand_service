@@ -1,0 +1,8 @@
+# Explicit modes remain available even though automatic routing is the default.
+hands:
+  left:
+    input: fingers
+  right:
+    input: gripper
+    gripper:
+      index: 1

@@ -1,183 +1,139 @@
-#include "stark-sdk.h"
-#include "param.h"
-
+#include "brainco/config.h"
+#include "brainco/serial.h"
 #include "dds/Publisher.h"
-#include "dds/Subscription.h"
+#include "param.h"
 #include <unitree/idl/go2/MotorCmds_.hpp>
 #include <unitree/idl/go2/MotorStates_.hpp>
-#include <unitree/common/thread/recurrent_thread.hpp>
-
-#include <iostream>
-#include <csignal>
-#include <chrono>
-#include <thread>
-#include <algorithm>
+#include <unitree/robot/channel/channel_subscriber.hpp>
 #include <atomic>
-#include <filesystem>
+#include <csignal>
+#include <thread>
 
-std::atomic<bool> running(true);
-void signal_handler(int) { running = false; }
+namespace {
+std::atomic<bool> stop_requested{false};
+static_assert(std::atomic<bool>::is_always_lock_free, "Signal handler requires lock-free atomics");
+std::atomic<bool> worker_failed{false};
+void signal_handler(int) { stop_requested.store(true, std::memory_order_relaxed); }
+bool running() { return !stop_requested.load(std::memory_order_relaxed) && !worker_failed.load(); }
 
-// Brainco Hand ID
-constexpr uint8_t L_id = 0x7e;
-constexpr uint8_t R_id = 0x7f;
-constexpr uint32_t baudrate = 460800;
-
-// ------------------ Utility ------------------
-std::vector<std::string> getAvailableSerialPorts() {
-    std::vector<std::string> ports;
-    for (const auto& entry : std::filesystem::directory_iterator("/dev")) {
-        std::string path = entry.path().string();
-
-        if (path.rfind("/dev/ttyUSB", 0) == 0) ports.push_back(path);
-        if (path.rfind("/dev/ttyHAND", 0) == 0) ports.push_back(path);
-        if (path.rfind("/dev/ttyUN", 0) == 0) ports.push_back(path);
-    }
-    spdlog::info("Available Serial Ports: {}", fmt::join(ports, ", "));
-    return ports;
+void interruptible_wait(unsigned millis) {
+    const auto deadline = brainco::Clock::now() + std::chrono::milliseconds(millis);
+    while (running() && brainco::Clock::now() < deadline)
+        std::this_thread::sleep_until(std::min(deadline, brainco::Clock::now() + std::chrono::milliseconds(20)));
 }
 
+class HandBridge {
+public:
+    explicit HandBridge(const brainco::HandConfig& config)
+        : config_(config), commands_(config), state_("rt/brainco/" + config.name + "/state"),
+          subscriber_(config.command_topic) {
+        // All callback state exists before InitChannel starts receiving.
+        subscriber_.InitChannel([this](const void* data) {
+            const auto& message = *static_cast<const unitree_go::msg::dds_::MotorCmds_*>(data);
+            std::vector<brainco::MotorInput> input;
+            input.reserve(message.cmds().size());
+            for (const auto& motor : message.cmds()) input.push_back({motor.q(), motor.dq()});
+            if (!commands_.accept(input)) {
+                if (++invalid_commands_ == 1 || invalid_commands_ % 100 == 0)
+                    spdlog::warn("{}: rejected malformed/nonfinite command on {} (count {})",
+                                 config_.name, config_.command_topic, invalid_commands_);
+            }
+        }, 1);
+        spdlog::info("Starting worker for {} (slave {}), input topic {}", config.name,
+                     static_cast<unsigned>(config.slave_id), config.command_topic);
+    }
 
-// Hand connection struct
-struct HandConnection {
-    DeviceHandler* handle{nullptr};
-    CDeviceInfo* info{nullptr};
-    std::string port;
+    ~HandBridge() { subscriber_.CloseChannel(); }
+
+    void update(DeviceHandler* handle) {
+        const auto sample = commands_.snapshot();
+        switch (schedule_.next(config_, sample)) {
+            case brainco::CommandAction::Send:
+                brainco::send_command(handle, config_, sample->command);
+                break;
+            case brainco::CommandAction::Stop:
+                brainco::stop_motion(handle, config_.slave_id);
+                spdlog::warn("{} command timed out; sent zero velocity", config_.name);
+                break;
+            case brainco::CommandAction::None: break;
+        }
+
+        std::unique_ptr<CMotorStatusData, decltype(&free_motor_status_data)> status(
+            stark_get_motor_status(handle, config_.slave_id), free_motor_status_data);
+        if (!status) {
+            if (++status_failures_ == 1 || status_failures_ % 100 == 0)
+                spdlog::warn("{} motor status read failed ({} consecutive failures)", config_.name, status_failures_);
+            return;
+        }
+        if (status_failures_) spdlog::info("{} status communication recovered", config_.name);
+        status_failures_ = 0;
+        if (!state_.trylock()) return;
+        auto& states = state_.msg_.states();
+        states.resize(brainco::finger_count);
+        for (std::size_t i = 0; i < brainco::finger_count; ++i) {
+            states[i].q() = status->positions[i] / 1000.f;
+            states[i].dq() = status->speeds[i] / 1000.f;
+            states[i].tau_est() = status->currents[i] / 1000.f;
+        }
+        state_.unlockAndPublish();
+    }
+
+private:
+    const brainco::HandConfig config_;
+    brainco::CommandBuffer commands_;
+    brainco::CommandSchedule schedule_;
+    unsigned status_failures_ = 0;
+    unsigned invalid_commands_ = 0;
+    unitree::robot::RealTimePublisher<unitree_go::msg::dds_::MotorStates_> state_;
+    // Destroy the subscriber before callback state.
+    unitree::robot::ChannelSubscriber<unitree_go::msg::dds_::MotorCmds_> subscriber_;
 };
 
-// Try connecting a hand on a given port
-HandConnection try_connect_hand(const std::string& port, uint8_t slave_id) {
-    HandConnection ret;
-    ret.port = port;
-
-    DeviceHandler* handle = modbus_open(port.c_str(), baudrate);
-    if (!handle) {
-        spdlog::warn("Failed to open {} at {} baud", port, baudrate);
-        return ret;
-    }
-
-    CDeviceInfo* info = stark_get_device_info(handle, slave_id);
-    if (!info) {
-        spdlog::warn("Failed to get device info from {} port", port);
-        modbus_close(handle);
-        return ret;
-    }
-
-    spdlog::info("Hand hardware_type: {}", info->hardware_type);
-    spdlog::info("Hand sku_type: {}", info->sku_type);
-    spdlog::info("Hand firmware_version: {}", info->firmware_version);
-    spdlog::info("Hand serial_number: {}", info->serial_number);
-
-    stark_set_finger_unit_mode(handle, slave_id, FINGER_UNIT_MODE_NORMALIZED);
-
-    ret.handle = handle;
-    ret.info = info;
-    return ret;
-}
-
-// Find a hand from available ports given allowed SKUs
-HandConnection find_hand(std::vector<std::string>& ports, uint8_t slave_id, const std::vector<SkuType>& allowed_skus, const std::string& hand_name) {
-    for (const auto& port : ports) {
-        spdlog::info("Trying port for {} hand from {} port", hand_name, port);
-        auto conn = try_connect_hand(port, slave_id);
-        if (!conn.handle) continue;
-
-        if (std::find(allowed_skus.begin(), allowed_skus.end(), conn.info->sku_type) != allowed_skus.end()) {
-            spdlog::info("{} hand bound to {} port", hand_name, port);
-            ports.erase(std::remove(ports.begin(), ports.end(), port), ports.end());
-            return conn;
-        } else {
-            modbus_close(conn.handle);
-            free_device_info(conn.info);
-            spdlog::warn("Port {} is not {} hand (sku {}). Closed.", port, hand_name, (int)conn.info->sku_type);
+void bus_worker(brainco::SerialBus& bus, const brainco::Config& config) {
+    try {
+        std::vector<std::unique_ptr<HandBridge>> hands;
+        for (const auto index : bus.hands) hands.push_back(std::make_unique<HandBridge>(config.hands[index]));
+        while (running()) {
+            const auto deadline = brainco::Clock::now() + std::chrono::milliseconds(config.period_ms);
+            for (auto& hand : hands) {
+                if (!running()) break;
+                hand->update(bus.handle.get());
+            }
+            // Serial transactions determine the achievable rate; never catch up with a burst.
+            if (running()) std::this_thread::sleep_until(deadline);
         }
+    } catch (const std::exception& error) {
+        spdlog::error("Worker on {} failed: {}", bus.port, error.what());
+        worker_failed = true;
     }
-    return {};
 }
-
-// ------------------ Hand Update Loop ------------------
-void update_finger(DeviceHandler* handle, uint8_t slave_id,
-                   unitree::robot::SubscriptionBase<unitree_go::msg::dds_::MotorCmds_>* lowcmd,
-                   unitree::robot::RealTimePublisher<unitree_go::msg::dds_::MotorStates_>* lowstate,
-                   const std::string& ns) {
-    uint16_t positions[6], speeds[6];
-
-    for (int i = 0; i < 6; ++i) {
-        positions[i] = static_cast<uint16_t>(std::clamp(lowcmd->msg_.cmds()[i].q(), 0.f, 1.f) * 1000.f);
-        speeds[i]    = static_cast<uint16_t>(std::clamp(lowcmd->msg_.cmds()[i].dq(), 0.f, 1.f) * 1000.f);
-    }
-
-    // Write commands
-    stark_set_finger_positions_and_speeds(handle, slave_id, positions, speeds, 6);
-
-    // Read status
-    auto status = stark_get_motor_status(handle, slave_id);
-    if (!status) return;
-
-    for (int i = 0; i < 6; ++i) {
-        lowstate->msg_.states()[i].q()        = status->positions[i] / 1000.f;
-        lowstate->msg_.states()[i].dq()       = status->speeds[i] / 1000.f;
-        lowstate->msg_.states()[i].tau_est()  = status->currents[i] / 1000.f;
-
-        // if (status->currents[i] > 800) {
-        //     spdlog::warn("{} finger {} over current: {} mA", ns, i, status->currents[i]);
-        // }
-    }
-    lowstate->unlockAndPublish();
-    free_motor_status_data(status);
-}
-
-// Worker thread for each hand
-void hand_worker(DeviceHandler* handle, uint8_t slave_id, const std::string& ns) {
-    spdlog::info("🚀 Starting worker for {} (slave {})", ns, (int)slave_id);
-
-    // DDS setup
-    auto lowcmd   = std::make_shared<unitree::robot::SubscriptionBase<unitree_go::msg::dds_::MotorCmds_>>("rt/brainco/" + ns + "/cmd");
-    lowcmd->msg_.cmds().resize(6);
-    for (auto& finger : lowcmd->msg_.cmds()) finger.dq() = 1.;
-
-    auto lowstate = std::make_unique<unitree::robot::RealTimePublisher<unitree_go::msg::dds_::MotorStates_>>("rt/brainco/" + ns + "/state");
-    lowstate->msg_.states().resize(6);
-
-    while (running) {
-        auto start_time = std::chrono::high_resolution_clock::now();
-        update_finger(handle, slave_id, lowcmd.get(), lowstate.get(), ns);
-        auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start_time).count();
-        int sleep_us = 10000 - static_cast<int>(elapsed_us); // 100Hz
-        if (sleep_us > 0) std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
-    }
-
-    spdlog::info("Worker for {} exiting (closing handle)", ns);
-    if (handle) modbus_close(handle);
-}
+} // namespace
 
 int main(int argc, char** argv) {
-    signal(SIGINT, signal_handler);
-
-    auto vm = param::helper(argc, argv);
-    unitree::robot::ChannelFactory::Instance()->Init(0, vm["network_interface"].as<std::string>());
-
-    init_logging(LogLevel::LOG_LEVEL_ERROR);
-
-    std::vector<std::string> available_ports = getAvailableSerialPorts();
-    if (available_ports.empty()) {
-        spdlog::warn("No ttyUSB serial ports found.");
-        return 0;
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+    try {
+        const auto vm = param::helper(argc, argv);
+        const auto config = brainco::load_config(vm["config"].as<std::string>());
+        init_logging(LOG_LEVEL_ERROR);
+        auto buses = brainco::discover(config, running, interruptible_wait,
+                                      [](const auto& message) { spdlog::info("{}", message); });
+        if (!running()) return 0;
+        if (vm.count("detect-only")) return 0;
+        unitree::robot::ChannelFactory::Instance()->Init(0, vm["network_interface"].as<std::string>());
+        std::vector<std::thread> workers;
+        try {
+            for (auto& bus : buses) workers.emplace_back(bus_worker, std::ref(bus), std::cref(config));
+        } catch (...) {
+            worker_failed = true;
+            for (auto& worker : workers) worker.join();
+            throw;
+        }
+        for (auto& worker : workers) worker.join();
+        // Buses own their handles; close them after every worker has stopped.
+        return worker_failed ? 1 : 0;
+    } catch (const std::exception& error) {
+        spdlog::error("{}", error.what());
+        return 1;
     }
-
-    HandConnection left_conn  = find_hand(available_ports, L_id, {SkuType::SKU_TYPE_SMALL_LEFT, SkuType::SKU_TYPE_MEDIUM_LEFT}, "left");
-    HandConnection right_conn = find_hand(available_ports, R_id, {SkuType::SKU_TYPE_SMALL_RIGHT, SkuType::SKU_TYPE_MEDIUM_RIGHT}, "right");
-
-    std::thread left_thread, right_thread;
-    if (left_conn.handle)  left_thread  = std::thread(hand_worker, left_conn.handle, L_id, "left");
-    if (right_conn.handle) right_thread = std::thread(hand_worker, right_conn.handle, R_id, "right");
-
-    if (left_thread.joinable())  left_thread.join();
-    if (right_thread.joinable()) right_thread.join();
-
-    if (left_conn.info)  free_device_info(left_conn.info);
-    if (right_conn.info) free_device_info(right_conn.info);
-
-    spdlog::info("exit.");
-    return 0;
 }
